@@ -40,7 +40,7 @@ CREATE TABLE metrics1
     service_name LowCardinality(String) CODEC(ZSTD(1)),
     metric_name LowCardinality(String) CODEC(ZSTD(1)),
     metric_type LowCardinality(String) CODEC(ZSTD(1)),
-    value Float64 CODEC(Gorilla, ZSTD(1)),
+    value Float64 CODEC(ZSTD(3)),
     count UInt64 DEFAULT 1 CODEC(T64, ZSTD(1)),
     histogram_bounds Array(Float64) CODEC(ZSTD(1)),
     histogram_counts Array(UInt64) CODEC(ZSTD(1)),
