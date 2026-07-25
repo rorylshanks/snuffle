@@ -863,7 +863,7 @@ func TestSelectedSeriesExactMatcherUnionSQLUsesSingleLabelIndexScan(t *testing.T
 	}
 	selectors := []*parser.VectorSelector{branches[0].selector, branches[1].selector}
 
-	sql, ok := selectedSeriesExactMatcherUnionSQL(cfg, selectors, []string{"id"})
+	sql, ok := selectedSeriesExactMatcherUnionSQL(cfg, selectors, []string{"id"}, 0, 0)
 	if !ok {
 		t.Fatal("selectedSeriesExactMatcherUnionSQL returned ok=false")
 	}
@@ -910,7 +910,7 @@ func TestSelectedSeriesExactMatcherUnionSQLFactorsSingleLabelValues(t *testing.T
 	aggregate := expr.(*parser.AggregateExpr)
 	selectors := branchSelectors(t, aggregate.Expr)
 
-	sql, ok := selectedSeriesExactMatcherUnionSQL(cfg, selectors, []string{"id"})
+	sql, ok := selectedSeriesExactMatcherUnionSQL(cfg, selectors, []string{"id"}, 0, 0)
 	if !ok {
 		t.Fatal("selectedSeriesExactMatcherUnionSQL returned ok=false")
 	}
@@ -998,7 +998,7 @@ func TestSelectedSeriesExactMatcherUnionSQLRejectsNonExactMatchers(t *testing.T)
 	}
 	aggregate := expr.(*parser.AggregateExpr)
 	selectors := branchSelectors(t, aggregate.Expr)
-	if sql, ok := selectedSeriesExactMatcherUnionSQL(Config{}, selectors, []string{"id"}); ok {
+	if sql, ok := selectedSeriesExactMatcherUnionSQL(Config{}, selectors, []string{"id"}, 0, 0); ok {
 		t.Fatalf("selectedSeriesExactMatcherUnionSQL returned ok=true with SQL:\n%s", sql)
 	}
 }
@@ -1181,9 +1181,14 @@ func TestRangeUnionSupportsRangeFunctionScalarBranches(t *testing.T) {
 	}
 
 	selectors := branchSelectors(t, aggregate.Expr)
-	selectedSeries, groupValues, ok := selectedSeriesExactMatcherUnionBranchesSQL(cfg, selectors, aggregate.Grouping)
+	selectedSeries, groupValues, ok := selectedSeriesExactMatcherUnionBranchesSQL(cfg, selectors, aggregate.Grouping, mint, maxt)
 	if !ok {
 		t.Fatal("selectedSeriesExactMatcherUnionBranchesSQL returned ok=false")
+	}
+	// Branch resolution must intersect with the series alive in the window;
+	// without it a high-cardinality metric resolves its whole lifetime.
+	if !strings.Contains(selectedSeries, "li.id IN (SELECT id FROM `default`.`samples`") {
+		t.Fatalf("branch SQL does not restrict to active series:\n%s", selectedSeries)
 	}
 	wantGroupValues := [][]string{{"a", "b"}, {"a_ws", "b_ws"}}
 	if !reflect.DeepEqual(groupValues, wantGroupValues) {
@@ -1214,7 +1219,7 @@ func TestRangeUnionSupportsRangeFunctionScalarBranches(t *testing.T) {
 			t.Fatalf("SQL contains %q:\n%s", notWant, sql)
 		}
 	}
-	if sql, _, ok := selectedSeriesExactMatcherUnionBranchesSQL(cfg, selectors, []string{"instance"}); ok {
+	if sql, _, ok := selectedSeriesExactMatcherUnionBranchesSQL(cfg, selectors, []string{"instance"}, 0, 0); ok {
 		t.Fatalf("unknown grouping label returned ok=true with SQL:\n%s", sql)
 	}
 }

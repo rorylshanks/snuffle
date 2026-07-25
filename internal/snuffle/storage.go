@@ -481,13 +481,8 @@ func seriesTimeFilters(cfg Config, matchers []*labels.Matcher, mint, maxt int64)
 
 func activeSeriesIDsSQL(cfg Config, matchers []*labels.Matcher, mint, maxt int64) string {
 	if metric := exactMetricName(matchers); metric != "" && cfg.SamplesTable != "" {
-		activeSources := []string{
-			activeSeriesIDsFromTimedTableSQL(cfg, cfg.SamplesTable, metric, mint, maxt),
-		}
-		if cfg.HistogramsTable != "" {
-			activeSources = append(activeSources, activeSeriesIDsFromTimedTableSQL(cfg, cfg.HistogramsTable, metric, mint, maxt))
-		}
-		return strings.Join(activeSources, " UNION DISTINCT ")
+		sql, _ := activeSeriesIDsForMetricsSQL(cfg, []string{metric}, mint, maxt)
+		return sql
 	}
 	where := []string{
 		teamFilter(cfg),
@@ -502,23 +497,39 @@ func activeSeriesIDsSQL(cfg Config, matchers []*labels.Matcher, mint, maxt int64
 	)
 }
 
-func activeSeriesIDsFromTimedTableSQL(cfg Config, table, metric string, mint, maxt int64) string {
+// activeSeriesIDsForMetricsSQL selects the series of the given metrics that
+// carry a data point in [mint, maxt]. A metric can have orders of magnitude
+// more series in the label index than are alive in any one query window, so
+// intersecting with this keeps selector resolution proportional to the answer
+// rather than to the metric's lifetime cardinality.
+func activeSeriesIDsForMetricsSQL(cfg Config, metricNames []string, mint, maxt int64) (string, bool) {
+	if cfg.SamplesTable == "" || len(metricNames) == 0 {
+		return "", false
+	}
+	sources := []string{activeSeriesIDsFromTimedTableSQL(cfg, cfg.SamplesTable, metricNames, mint, maxt)}
+	if cfg.HistogramsTable != "" {
+		sources = append(sources, activeSeriesIDsFromTimedTableSQL(cfg, cfg.HistogramsTable, metricNames, mint, maxt))
+	}
+	return strings.Join(sources, " UNION DISTINCT "), true
+}
+
+func activeSeriesIDsFromTimedTableSQL(cfg Config, table string, metricNames []string, mint, maxt int64) string {
+	where := []string{teamFilter(cfg)}
 	if table == cfg.SamplesTable {
-		matchers := []*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, labels.MetricName, metric)}
-		where := sampleBaseFilters(cfg, matchers, mint, maxt)
-		return fmt.Sprintf(
-			"SELECT id FROM %s WHERE %s GROUP BY id",
-			tableName(cfg.CHDatabase, table),
-			strings.Join(where, " AND "),
+		where = append(where, sampleTimeFilters(cfg, mint, maxt)...)
+	} else {
+		where = append(where,
+			"timestamp >= "+chTimeMillis(mint),
+			"timestamp <= "+chTimeMillis(maxt),
 		)
 	}
+	if condition := metricNamesCondition(metricNames); condition != "" {
+		where = append(where, condition)
+	}
 	return fmt.Sprintf(
-		"SELECT id FROM %s WHERE %s AND metric_name = %s AND timestamp >= %s AND timestamp <= %s GROUP BY id",
+		"SELECT id FROM %s WHERE %s GROUP BY id",
 		tableName(cfg.CHDatabase, table),
-		teamFilter(cfg),
-		sqlString(metric),
-		chTimeMillis(mint),
-		chTimeMillis(maxt),
+		strings.Join(where, " AND "),
 	)
 }
 

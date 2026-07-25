@@ -1043,7 +1043,7 @@ func (s *Server) tryFastAggregateRangeUnionQuery(ctx context.Context, expr *pars
 		selectors = append(selectors, branch.selector)
 	}
 	if source.sumOverTime == nil && !source.runningSumWrap {
-		if selectedSeries, groupValues, ok := selectedSeriesExactMatcherUnionBranchesSQL(s.cfg, selectors, expr.Grouping); ok {
+		if selectedSeries, groupValues, ok := selectedSeriesExactMatcherUnionBranchesSQL(s.cfg, selectors, expr.Grouping, mint, maxt); ok {
 			where := []string{teamFilter(s.cfg)}
 			where = append(where, sampleTimeFilters(s.cfg, mint, maxt)...)
 			if condition := metricNamesCondition(exactMetricNamesForSelectors(selectors)); condition != "" {
@@ -2943,7 +2943,12 @@ func selectedSeriesUnionSQL(cfg Config, selectors []*parser.VectorSelector, wind
 		return "", false
 	}
 	if len(selectors) > 1 {
-		if sql, ok := selectedSeriesExactMatcherUnionSQL(cfg, selectors, selectParts); ok {
+		mint, maxt := windows[0].mint, windows[0].maxt
+		for _, window := range windows[1:] {
+			mint = min(mint, window.mint)
+			maxt = max(maxt, window.maxt)
+		}
+		if sql, ok := selectedSeriesExactMatcherUnionSQL(cfg, selectors, selectParts, mint, maxt); ok {
 			return sql, true
 		}
 	}
@@ -2972,7 +2977,7 @@ type exactSelectorMatcherSet struct {
 	labels []exactLabelMatcher
 }
 
-func selectedSeriesExactMatcherUnionSQL(cfg Config, selectors []*parser.VectorSelector, selectParts []string) (string, bool) {
+func selectedSeriesExactMatcherUnionSQL(cfg Config, selectors []*parser.VectorSelector, selectParts []string, mint, maxt int64) (string, bool) {
 	if len(selectors) < 2 || selectedSeriesNeedsBounds(selectParts) {
 		return "", false
 	}
@@ -2991,7 +2996,7 @@ func selectedSeriesExactMatcherUnionSQL(cfg Config, selectors []*parser.VectorSe
 		}
 	}
 
-	matchedIDs := exactMatcherUnionIDsSQL(cfg, sets)
+	matchedIDs := exactMatcherUnionIDsSQL(cfg, sets, mint, maxt)
 	if selectPartsIDOnly(selectParts) {
 		return "SELECT id FROM (" + matchedIDs + ") GROUP BY id", true
 	}
@@ -3009,11 +3014,13 @@ func selectedSeriesExactMatcherUnionSQL(cfg Config, selectors []*parser.VectorSe
 	), true
 }
 
-func selectedSeriesExactMatcherUnionBranchesSQL(cfg Config, selectors []*parser.VectorSelector, grouping []string) (string, [][]string, bool) {
+func selectedSeriesExactMatcherUnionBranchesSQL(cfg Config, selectors []*parser.VectorSelector, grouping []string, mint, maxt int64) (string, [][]string, bool) {
 	if len(selectors) < 2 || len(grouping) == 0 {
 		return "", nil, false
 	}
 	sets := make([]exactSelectorMatcherSet, 0, len(selectors))
+	metricNames := make([]string, 0, len(selectors))
+	seenMetrics := make(map[string]struct{}, len(selectors))
 	groupValues := make([][]string, len(grouping))
 	for _, selector := range selectors {
 		set, ok := exactSelectorMatcherSetFor(selector.LabelMatchers)
@@ -3021,6 +3028,10 @@ func selectedSeriesExactMatcherUnionBranchesSQL(cfg Config, selectors []*parser.
 			return "", nil, false
 		}
 		sets = append(sets, set)
+		if _, ok := seenMetrics[set.metric]; !ok {
+			seenMetrics[set.metric] = struct{}{}
+			metricNames = append(metricNames, set.metric)
+		}
 		for i, name := range grouping {
 			value := set.metric
 			found := name == labels.MetricName
@@ -3039,7 +3050,7 @@ func selectedSeriesExactMatcherUnionBranchesSQL(cfg Config, selectors []*parser.
 			groupValues[i] = append(groupValues[i], value)
 		}
 	}
-	return "SELECT id, min(branch) AS branch FROM (" + exactMatcherUnionBranchIDsSQL(cfg, sets) + ") GROUP BY id", groupValues, true
+	return "SELECT id, min(branch) AS branch FROM (" + exactMatcherUnionBranchIDsSQL(cfg, sets, mint, maxt) + ") GROUP BY id", groupValues, true
 }
 
 func selectPartsIDOnly(selectParts []string) bool {
@@ -3084,14 +3095,14 @@ func exactSelectorMatcherSetFor(matchers []*labels.Matcher) (exactSelectorMatche
 	return exactSelectorMatcherSet{metric: metric, labels: labelMatchers}, true
 }
 
-func exactMatcherUnionIDsSQL(cfg Config, sets []exactSelectorMatcherSet) string {
+func exactMatcherUnionIDsSQL(cfg Config, sets []exactSelectorMatcherSet, mint, maxt int64) string {
 	if sql, ok := singleExactLabelUnionIDsSQL(cfg, sets); ok {
 		return sql
 	}
-	return "SELECT id FROM (" + exactMatcherUnionBranchIDsSQL(cfg, sets) + ") GROUP BY id"
+	return "SELECT id FROM (" + exactMatcherUnionBranchIDsSQL(cfg, sets, mint, maxt) + ") GROUP BY id"
 }
 
-func exactMatcherUnionBranchIDsSQL(cfg Config, sets []exactSelectorMatcherSet) string {
+func exactMatcherUnionBranchIDsSQL(cfg Config, sets []exactSelectorMatcherSet, mint, maxt int64) string {
 	matcherRows := make([]string, 0, len(sets))
 	metricNames := make([]string, 0, len(sets))
 	labelNames := make([]string, 0, len(sets))
@@ -3130,6 +3141,9 @@ func exactMatcherUnionBranchIDsSQL(cfg Config, sets []exactSelectorMatcherSet) s
 	}
 	where = append(where, inCondition("label_name", labelNames))
 	where = append(where, inCondition("label_value", labelValues))
+	if active, ok := activeSeriesIDsForMetricsSQL(cfg, metricNames, mint, maxt); ok {
+		where = append(where, "li.id IN ("+active+")")
+	}
 	// A series matches a branch once it has hit every one of that branch's
 	// label matchers. Counting distinct label names for that check builds a
 	// string hash set per (branch, id) group, which dominated dashboard CPU;
