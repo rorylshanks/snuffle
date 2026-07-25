@@ -1069,7 +1069,7 @@ func rawSamplesSourceSQL(cfg Config, where string) string {
 
 func samplesForSelectedSeriesSQL(cfg Config, matchers []*labels.Matcher, mint, maxt int64) string {
 	where := sampleBaseFilters(cfg, matchers, mint, maxt)
-	where = append(where, sampleSelectedSeriesFilters(cfg)...)
+	where = append(where, sampleSelectedSeriesFiltersFromMatchers(cfg, matchers)...)
 	return rawSamplesSourceSQL(cfg, strings.Join(where, " AND "))
 }
 

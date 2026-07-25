@@ -108,6 +108,20 @@ func sampleSelectedSeriesFilters(cfg Config) []string {
 	return sampleIDMembershipFilters(cfg, "IN", "SELECT id FROM selected_series")
 }
 
+// sampleSelectedSeriesFiltersFromMatchers prunes a sample scan to the selected
+// series without naming the selected_series CTE. ClickHouse inlines CTEs rather
+// than materialising them, so referencing it from the sample scan runs the whole
+// series lookup a second time -- which costs more than the scan it saves. The
+// label index answers the same question on its own, off a single key prefix.
+func sampleSelectedSeriesFiltersFromMatchers(cfg Config, matchers []*labels.Matcher) []string {
+	if metric := exactMetricName(matchers); metric != "" && cfg.LabelIndexTable != "" {
+		if filters, ok := nonMetricSampleIDFiltersFromMatchers(cfg, metric, matchers); ok {
+			return filters
+		}
+	}
+	return sampleSelectedSeriesFilters(cfg)
+}
+
 func sampleExplicitIDFilters(cfg Config, ids []uint64) []string {
 	return sampleIDMembershipFilters(cfg, "IN", joinUint64(ids))
 }

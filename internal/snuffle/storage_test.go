@@ -425,3 +425,34 @@ func TestTopKSelectedSeriesCarriesLabelsAndMetricConstraint(t *testing.T) {
 		}
 	}
 }
+
+func TestSamplesForSelectedSeriesSQLPrunesViaLabelIndex(t *testing.T) {
+	cfg := Config{CHDatabase: "default", SeriesTable: "series", SamplesTable: "samples", LabelIndexTable: "label_index"}
+	matchers := []*labels.Matcher{
+		labels.MustNewMatcher(labels.MatchEqual, labels.MetricName, "http_requests_total"),
+		labels.MustNewMatcher(labels.MatchEqual, "status", "200"),
+	}
+
+	sql := samplesForSelectedSeriesSQL(cfg, matchers, 1000, 2000)
+	// Naming selected_series here would make ClickHouse run the series lookup a
+	// second time, since it inlines CTEs instead of materialising them.
+	if strings.Contains(sql, "selected_series") {
+		t.Fatalf("sample scan references the selected_series CTE:\n%s", sql)
+	}
+	for _, want := range []string{
+		"`default`.`label_index`",
+		"metric_name = 'http_requests_total'",
+		"label_name = 'status'",
+		"label_value = '200'",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("SQL does not contain %q:\n%s", want, sql)
+		}
+	}
+
+	// A matcher the label index cannot answer has to fall back to the CTE.
+	unindexable := []*labels.Matcher{labels.MustNewMatcher(labels.MatchRegexp, "status", "2.*")}
+	if sql := samplesForSelectedSeriesSQL(cfg, unindexable, 1000, 2000); !strings.Contains(sql, "selected_series") {
+		t.Fatalf("unindexable matcher did not fall back to selected_series:\n%s", sql)
+	}
+}
