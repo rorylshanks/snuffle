@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
@@ -97,11 +98,27 @@ func (q *CHQuerier) selectSeriesMeta(ctx context.Context, hints *storage.SelectH
 		series = series[:hints.Limit]
 	}
 
-	if err := q.loadSamples(ctx, series, q.mint, q.maxt, latestOnly, matchers); err != nil {
-		return nil, err
+	// Float samples and native histograms live in separate tables and land in
+	// separate fields of each series, so the two reads are independent. Running
+	// them back to back made every selector that falls off the fast path pay
+	// both round trips even when one of the tables has nothing to contribute.
+	var samplesErr, histogramsErr error
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		samplesErr = q.loadSamples(ctx, series, q.mint, q.maxt, latestOnly, matchers)
+	}()
+	go func() {
+		defer wait.Done()
+		histogramsErr = q.loadHistograms(ctx, series, q.mint, q.maxt, matchers)
+	}()
+	wait.Wait()
+	if samplesErr != nil {
+		return nil, samplesErr
 	}
-	if err := q.loadHistograms(ctx, series, q.mint, q.maxt, matchers); err != nil {
-		return nil, err
+	if histogramsErr != nil {
+		return nil, histogramsErr
 	}
 	return series, nil
 }
