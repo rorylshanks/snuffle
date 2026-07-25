@@ -3076,7 +3076,9 @@ func exactSelectorMatcherSetFor(matchers []*labels.Matcher) (exactSelectorMatche
 		seenLabels[matcher.Name] = struct{}{}
 		labelMatchers = append(labelMatchers, exactLabelMatcher{name: matcher.Name, value: matcher.Value})
 	}
-	if metric == "" || len(labelMatchers) == 0 {
+	// One bit per matcher tracks branch completeness in SQL, so a branch can
+	// carry at most 64 of them.
+	if metric == "" || len(labelMatchers) == 0 || len(labelMatchers) > 64 {
 		return exactSelectorMatcherSet{}, false
 	}
 	return exactSelectorMatcherSet{metric: metric, labels: labelMatchers}, true
@@ -3102,7 +3104,7 @@ func exactMatcherUnionBranchIDsSQL(cfg Config, sets []exactSelectorMatcherSet) s
 			seenMetricNames[set.metric] = struct{}{}
 			metricNames = append(metricNames, set.metric)
 		}
-		for _, matcher := range set.labels {
+		for position, matcher := range set.labels {
 			if _, ok := seenLabelNames[matcher.name]; !ok {
 				seenLabelNames[matcher.name] = struct{}{}
 				labelNames = append(labelNames, matcher.name)
@@ -3112,9 +3114,10 @@ func exactMatcherUnionBranchIDsSQL(cfg Config, sets []exactSelectorMatcherSet) s
 				labelValues = append(labelValues, matcher.value)
 			}
 			matcherRows = append(matcherRows, fmt.Sprintf(
-				"(%d, %d, %s, %s, %s)",
+				"(%d, %d, %d, %s, %s, %s)",
 				branch,
-				len(set.labels),
+				fullBranchMask(len(set.labels)),
+				uint64(1)<<uint(position),
 				sqlString(set.metric),
 				sqlString(matcher.name),
 				sqlString(matcher.value),
@@ -3127,12 +3130,21 @@ func exactMatcherUnionBranchIDsSQL(cfg Config, sets []exactSelectorMatcherSet) s
 	}
 	where = append(where, inCondition("label_name", labelNames))
 	where = append(where, inCondition("label_value", labelValues))
+	// A series matches a branch once it has hit every one of that branch's
+	// label matchers. Counting distinct label names for that check builds a
+	// string hash set per (branch, id) group, which dominated dashboard CPU;
+	// OR-ing one bit per matcher is exact, duplicate-safe, and a plain UInt64.
 	return fmt.Sprintf(
-		"SELECT mr.branch AS branch, li.id AS id FROM %s AS li INNER JOIN %s AS mr ON li.metric_name = mr.metric_name AND li.label_name = mr.label_name AND li.label_value = mr.label_value WHERE %s GROUP BY branch, id, matcher_count HAVING uniqExact(li.label_name) = matcher_count",
+		"SELECT mr.branch AS branch, li.id AS id FROM %s AS li INNER JOIN %s AS mr ON li.metric_name = mr.metric_name AND li.label_name = mr.label_name AND li.label_value = mr.label_value WHERE %s GROUP BY branch, id, full_mask HAVING groupBitOr(mr.match_bit) = full_mask",
 		tableName(cfg.CHDatabase, cfg.LabelIndexTable),
-		"values('branch UInt32, matcher_count UInt32, metric_name String, label_name String, label_value String', "+strings.Join(matcherRows, ", ")+")",
+		"values('branch UInt32, full_mask UInt64, match_bit UInt64, metric_name String, label_name String, label_value String', "+strings.Join(matcherRows, ", ")+")",
 		strings.Join(where, " AND "),
 	)
+}
+
+// fullBranchMask is the set of matcher bits a series must hit to match a branch.
+func fullBranchMask(matchers int) uint64 {
+	return uint64(1)<<uint(matchers) - 1
 }
 
 func singleExactLabelUnionIDsSQL(cfg Config, sets []exactSelectorMatcherSet) (string, bool) {

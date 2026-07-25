@@ -869,15 +869,16 @@ func TestSelectedSeriesExactMatcherUnionSQLUsesSingleLabelIndexScan(t *testing.T
 	}
 	for _, want := range []string{
 		"`default`.`label_index` AS li",
-		"INNER JOIN values('branch UInt32, matcher_count UInt32, metric_name String, label_name String, label_value String'",
-		"(0, 2, 'warpstream_consumer_group_max_offset', 'topic', 'a')",
+		"INNER JOIN values('branch UInt32, full_mask UInt64, match_bit UInt64, metric_name String, label_name String, label_value String'",
+		"(0, 3, 1, 'warpstream_consumer_group_max_offset', 'topic', 'a')",
+		"(0, 3, 2, 'warpstream_consumer_group_max_offset', 'consumer_group', 'a_ws')",
 		"li.metric_name = mr.metric_name",
 		"li.label_name = mr.label_name",
 		"li.label_value = mr.label_value",
 		"metric_name = 'warpstream_consumer_group_max_offset'",
 		"label_name IN ('topic','consumer_group')",
 		"label_value IN ('a','a_ws','b','b_ws')",
-		"uniqExact(li.label_name) = matcher_count",
+		"groupBitOr(mr.match_bit) = full_mask",
 		"topic",
 		"consumer_group",
 	} {
