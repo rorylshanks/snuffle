@@ -293,23 +293,27 @@ func TestRemoteWritePhaseErrorIncludesUsefulContext(t *testing.T) {
 	}
 }
 
-func TestMissingSeriesIDsSQLReturnsOnlyLookupMisses(t *testing.T) {
+func TestKnownSeriesIDsSQLDrivesLookupFromTheBatch(t *testing.T) {
 	cfg := Config{
 		CHDatabase:  "default",
 		SeriesTable: "series",
 		TeamID:      42,
 	}
-	sql := missingSeriesIDsSQL(cfg, "remote_write_series_ids")
+	sql := knownSeriesIDsSQL(cfg, "remote_write_series_ids")
 	for _, want := range []string{
 		"SELECT id",
-		"`remote_write_series_ids`",
-		"id NOT IN",
 		"`default`.`series`",
 		"team_id = 42",
+		"id IN (SELECT id FROM `remote_write_series_ids`)",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("SQL %q does not contain %q", sql, want)
 		}
+	}
+	// Scanning the tenant's whole series set to answer a question about one
+	// batch is what made this cost 2.9s per remote-write request.
+	if strings.Contains(sql, "NOT IN") {
+		t.Fatalf("SQL still scans the full series set: %q", sql)
 	}
 }
 
