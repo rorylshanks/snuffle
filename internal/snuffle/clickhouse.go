@@ -58,6 +58,12 @@ func openClickHouse(cfg Config, username, password string) (clickhouse.Conn, err
 		},
 		Settings: clickhouse.Settings{
 			"allow_experimental_time_series_aggregate_functions": 1,
+			// Every selector filters the label index on its sort-key prefix
+			// (team_id, metric_name, label_name, label_value), which no
+			// projection can improve on. ClickHouse still scans each
+			// projection's primary index to decide that, and the label index
+			// has ~900k marks, so the rejected analysis costs ~65ms per query.
+			"optimize_use_projections": 0,
 		},
 		DialTimeout:     cfg.CHTimeout,
 		MaxOpenConns:    32,
