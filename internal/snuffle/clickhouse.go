@@ -64,6 +64,13 @@ func openClickHouse(cfg Config, username, password string) (clickhouse.Conn, err
 			// projection's primary index to decide that, and the label index
 			// has ~900k marks, so the rejected analysis costs ~65ms per query.
 			"optimize_use_projections": 0,
+			// Remote write arrives pre-batched, so the async insert buffer is
+			// there to coalesce writers, not to build a batch. ClickHouse's 10MB
+			// default is far above anything one request contributes, so every
+			// insert waited out the busy timeout (50-200ms) instead of flushing
+			// on size. Bounding it flushes once a request's worth of data has
+			// landed; small writers still coalesce on the timer as before.
+			"async_insert_max_data_size": 1048576,
 		},
 		DialTimeout:     cfg.CHTimeout,
 		MaxOpenConns:    32,
